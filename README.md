@@ -51,7 +51,7 @@ Options:
   -V, --version                        Print version
 ```
 
-## Notes
+## Notes (Linux)
 
 * This tools access the drive with O_DIRECT and O_SYNC, which is supposed to bypass and OS cache
   and ensure data is read/written directly from/to the drive. However the device may have some
@@ -61,6 +61,33 @@ Options:
   increased.
 * If you get the error `Device or resource busy (os error 16)`, it is likely your OS auto-mounted a
   partition from the USB drive and you need to unmount it, before you can use this tool.
+
+## Notes (Windows)
+
+* for the `--drive` option, the value of `<DRIVE>` must reference the physical drive number
+
+  |          |                                  |
+  | -------- | -------------------------------- |
+  | format:  | `\\.\PhysicalDrive<DISK_NUMBER>` |
+  | example: | `\\.\PhysicalDrive2`             |
+
+* to obtain physical drive number&hellip;
+  1. at `cmd` prompt, run:
+     ```text
+     diskpart
+     ```
+  2. at `diskpart` prompt, run:
+     ```text
+     list volume
+     select volume F
+     detail volume
+     exit
+     ```
+     * where `F` is replaced by the drive letter of the volume on which to perform validation
+     * where `<DISK_NUMBER>` is obtained from the column labeled `Disk ###`
+       - example: `Disk 2`
+         * `<DISK_NUMBER>` = `2`
+         * `<DRIVE>` = `\\.\PhysicalDrive2`
 
 ## Future improvements
 
