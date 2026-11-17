@@ -23,7 +23,11 @@ SOFTWARE.
 use anyhow::Result;
 use std::time;
 
+#[cfg(target_os = "linux")]
 mod linux;
+
+#[cfg(target_os = "windows")]
+mod windows;
 
 /// A trait for storage device operations.
 pub trait Device {
@@ -131,7 +135,21 @@ impl DeviceInfo {
 ///
 /// If `read_only` is true, the device is opened in read-only mode.
 pub fn open(device: &str, read_only: bool) -> Result<Box<dyn Device>> {
-    Ok(Box::new(linux::open(device, read_only)?) as Box<dyn Device>)
+    #[cfg(target_os = "linux")]
+    {
+        Ok(Box::new(linux::open(device, read_only)?) as Box<dyn Device>)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Ok(Box::new(windows::open(device, read_only)?) as Box<dyn Device>)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        let _ = (device, read_only);
+        anyhow::bail!("This program supports only Linux and Windows")
+    }
 }
 
 /// If `value` is not empty, prints `label: value` to stdout.
