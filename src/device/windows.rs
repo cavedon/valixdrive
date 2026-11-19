@@ -27,6 +27,7 @@ const OPEN_EXISTING: Dword = 3;
 const FILE_ATTRIBUTE_NORMAL: Dword = 0x0000_0080;
 const FILE_BEGIN: Dword = 0;
 
+const FSCTL_LOCK_VOLUME: Dword = 0x0009_0018;
 const IOCTL_DISK_GET_DRIVE_GEOMETRY_EX: Dword = 0x0007_00A0;
 
 #[repr(C)]
@@ -139,6 +140,27 @@ pub fn open(device: &str, read_only: bool) -> Result<WindowsDevice> {
     if handle == INVALID_HANDLE_VALUE {
         return Err(last_os_error_with_context_closure(|| {
             format!("opening Windows drive {device:?}")
+        }));
+    }
+
+    let mut bytes_returned: u32 = 0;
+
+    let locked = unsafe {
+        DeviceIoControl(
+            handle,
+            FSCTL_LOCK_VOLUME,
+            null(),
+            0,
+            null_mut(),
+            0,
+            &mut bytes_returned,
+            null_mut(),
+        )
+    };
+
+    if locked == 0 {
+        return Err(last_os_error_with_context_closure(|| {
+            format!("locking Windows drive {device:?}")
         }));
     }
 
