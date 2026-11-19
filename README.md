@@ -41,14 +41,16 @@ This tool will:
 Usage: valixdrive [OPTIONS] --drive <DRIVE>
 
 Options:
-  -d, --drive <DRIVE>                  The storage device to test
-  -b, --block-size-kb <BLOCK_SIZE_KB>  The block size to read/write in KiB [default: 4]
-  -n, --num-blocks <NUM_BLOCKS>        The number of blocks to test [default: 576]
-  -R, --read-only                      Perform only a read test
-  -w, --map-width <MAP_WIDTH>          Width in columns of the validation map printed on the terminal [default: 64]
-  -O, --no-restore-original            Do not read and restore original blocks values
   -h, --help                           Print help
   -V, --version                        Print version
+  -d, --drive <DRIVE>                  The storage device to test
+  -b, --block-size-kb <BLOCK_SIZE_KB>  The block size to read/write in KiB [default: 4]
+  -S, --binary-search                  Perform a binary search to identify the last valid block
+                                       note: when enabled, all subsequent options are ignored
+  -n, --num-blocks <NUM_BLOCKS>        The number of blocks to test [default: 576]
+  -R, --read-only                      Perform only a read test
+  -O, --no-restore-original            Do not read and restore original blocks values
+  -w, --map-width <MAP_WIDTH>          Width in columns of the validation map printed on the terminal [default: 64]
 ```
 
 ## Notes (Linux)

@@ -39,18 +39,21 @@ struct Cli {
     /// The block size to read/write in KiB.
     #[arg(short = 'b', long = "block-size-kb", default_value = "4")]
     block_size_kb: u64,
+    /// Perform only a binary search.
+    #[arg(short = 'S', long = "binary-search")]
+    binary_search: bool,
     /// The number of blocks to test.
     #[arg(short = 'n', long = "num-blocks", default_value = "576")]
     num_blocks: usize,
     /// Perform only a read test.
     #[arg(short = 'R', long = "read-only")]
     read_only: bool,
-    /// Width in columns of the validation map printed on the terminal.
-    #[arg(short = 'w', long = "map-width", default_value = "64")]
-    map_width: usize,
     /// Do not read and restore original blocks content.
     #[arg(short = 'O', long = "no-restore-original")]
     no_restore_original: bool,
+    /// Width in columns of the validation map printed on the terminal.
+    #[arg(short = 'w', long = "map-width", default_value = "64")]
+    map_width: usize,
 }
 
 /// Convert a Duration to milliseconds.
@@ -308,11 +311,87 @@ fn print_stats(durations: &Vec<std::time::Duration>) {
     );
 }
 
+/// ----------------------------------------------------------------------------
+/// functions for binary search option:
+
+fn count_valid_blocks(
+    num_blocks: u64,
+    mut validate_block: impl FnMut(u64) -> Result<bool>,
+) -> Result<u64> {
+    if num_blocks == 0 || !validate_block(0)? {
+        return Ok(0);
+    }
+
+    let mut left = 0_u64;
+    let mut right = num_blocks - 1;
+    let mut last_valid = 0_u64;
+
+    while left <= right {
+        let mid = left + (right - left) / 2;
+
+        if validate_block(mid)? {
+            last_valid = mid;
+            left = mid + 1;
+        } else {
+            // Avoid underflow when mid is zero.
+            if mid == 0 {
+                break;
+            }
+            right = mid - 1;
+        }
+    }
+
+    Ok(last_valid + 1)
+}
+
+fn validate_block(
+    drive: &mut dyn device::Device,
+    block_num: u64,
+    block_size: usize,
+) -> Result<bool> {
+    let offset = block_num
+        .checked_mul(block_size as u64)
+        .ok_or_else(|| anyhow!("Block offset overflow"))?;
+
+    let alignment = drive.get_memory_alignment();
+
+    let mut original = Blocks::new(block_size, 1, alignment);
+    if drive.read(offset, original.block_mut(0)).is_err() {
+        return Ok(false);
+    }
+
+    let mut random = Blocks::new(block_size, 1, alignment);
+    let mut rng = rngs::SmallRng::from_entropy();
+    rng.fill_bytes(random.block_mut(0));
+
+    let mut readback = Blocks::new(block_size, 1, alignment);
+
+    let test_passed = drive
+        .write(offset, random.block(0))
+        .and_then(|_| drive.read(offset, readback.block_mut(0)))
+        .is_ok()
+        && readback.block(0) == random.block(0);
+
+    // Attempt restoration even if the write, read, or comparison failed.
+    let restored = drive.write(offset, original.block(0)).is_ok();
+
+    if test_passed && !restored {
+        println!(
+            "{}: {}",
+            console::style("[Warning] Failed to restore block index").bold(),
+            block_num
+        );
+    }
+
+    Ok(test_passed)
+}
+
+/// ----------------------------------------------------------------------------
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let mut drive = device::open(&cli.drive, cli.read_only)?;
-    drive.get_device_info()?.print();
 
     if drive.get_size() % (cli.block_size_kb * 1024) != 0 {
         return Err(anyhow!(
@@ -322,144 +401,192 @@ fn main() -> Result<()> {
         ));
     }
     let num_drive_blocks = drive.get_size() / (cli.block_size_kb * 1024);
-    // spot_blocks contains the list of blocks selected for testing.
-    let mut spot_blocks = Vec::with_capacity(cli.num_blocks);
-    for i in 0..cli.num_blocks {
-        // Divide the drive in cli.num_blocks areas, and select the block best covering the end of
-        // each area.
-        spot_blocks.push(BlockIdx {
-            idx: i,
-            num: (((i + 1) as u64 * num_drive_blocks) as f64 / cli.num_blocks as f64).round()
-                as u64
-                - 1,
-        });
-    }
 
-    let mut rng = rngs::SmallRng::from_entropy();
-    // Shuffle the blocks to test, so that they are not tested in the order they are present on the
-    // drive.
-    spot_blocks.shuffle(&mut rng);
+    if cli.binary_search {
+        let count = count_valid_blocks(num_drive_blocks, |block_num| {
+            validate_block(drive.as_mut(), block_num, cli.block_size_kb as usize * 1024)
+        })?;
 
-    // validation_map contains the result of the validation of each block.
-    let mut validation_map = vec![BlockReport::Unknown; cli.num_blocks];
+        let drive_size_bytes = drive.get_size();
+        let valid_size_kb = count * cli.block_size_kb;
 
-    // orig_data_option contains the original blocks data, if they were read, so that it can be
-    // restored at the end of the test.
-    let mut orig_data_option = None;
+        println!(
+            "{}: {} bytes ({:.3} GiB)",
+            console::style("Size of drive").bold(),
+            drive_size_bytes,
+            drive_size_bytes as f64 / 1024.0 / 1024.0 / 1024.0
+        );
 
-    if !cli.no_restore_original {
-        println!("{}", console::style("\nReading original blocks").bold());
-        let orig_data = read_blocks(
+        println!(
+            "{}: {} bytes ({} KiB)",
+            console::style("Block size").bold(),
+            cli.block_size_kb * 1024,
+            cli.block_size_kb
+        );
+
+        println!(
+            "{}: {}",
+            console::style("Block count").bold(),
+            num_drive_blocks
+        );
+
+        println!(
+            "{}: {}",
+            console::style("Count of valid blocks").bold(),
+            count
+        );
+
+        println!(
+            "{}: {} bytes ({} KiB, {:.3} MiB, {:.3} GiB)",
+            console::style("Size of valid blocks").bold(),
+            valid_size_kb * 1024,
+            valid_size_kb,
+            valid_size_kb as f64 / 1024.0,
+            valid_size_kb as f64 / 1024.0 / 1024.0
+        );
+    } else {
+        drive.get_device_info()?.print();
+
+        // spot_blocks contains the list of blocks selected for testing.
+        let mut spot_blocks = Vec::with_capacity(cli.num_blocks);
+        for i in 0..cli.num_blocks {
+            // Divide the drive in cli.num_blocks areas, and select the block best covering the end of
+            // each area.
+            spot_blocks.push(BlockIdx {
+                idx: i,
+                num: (((i + 1) as u64 * num_drive_blocks) as f64 / cli.num_blocks as f64).round()
+                    as u64
+                    - 1,
+            });
+        }
+
+        let mut rng = rngs::SmallRng::from_entropy();
+        // Shuffle the blocks to test, so that they are not tested in the order they are present on the
+        // drive.
+        spot_blocks.shuffle(&mut rng);
+
+        // validation_map contains the result of the validation of each block.
+        let mut validation_map = vec![BlockReport::Unknown; cli.num_blocks];
+
+        // orig_data_option contains the original blocks data, if they were read, so that it can be
+        // restored at the end of the test.
+        let mut orig_data_option = None;
+
+        if !cli.no_restore_original {
+            println!("{}", console::style("\nReading original blocks").bold());
+            let orig_data = read_blocks(
+                drive.deref_mut(),
+                &spot_blocks,
+                cli.block_size_kb as usize * 1024,
+            );
+
+            // Record any read error in the validation map.
+            for i in 0..cli.num_blocks {
+                if orig_data.errors[i] == IoError::ReadError {
+                    validation_map[spot_blocks[i].idx] = BlockReport::ReadError;
+                } else {
+                    validation_map[spot_blocks[i].idx] = BlockReport::ReadSuccessful;
+                }
+            }
+
+            let has_read_errors = validation_map.contains(&BlockReport::ReadError);
+            if has_read_errors || cli.read_only {
+                // Typically, we would print the validation map at the end, but
+                // if there were read errors, print the validation map and exit.
+                print_validation_map(&validation_map, cli.map_width);
+            }
+            if cli.read_only {
+                return Ok(());
+            }
+            if has_read_errors {
+                println!(
+                    "{}",
+                    console::style("I/O errors encountered reading original blocks, exiting").red()
+                );
+                return Err(anyhow!("I/O errors reading original blocks"));
+            }
+            orig_data_option = Some(orig_data);
+        }
+
+        println!(
+            "{}",
+            console::style("\nWriting blocks with random data").bold()
+        );
+
+        // Generate the random data to write to the blocks.
+        let mut random_blocks = Blocks::new(
+            cli.block_size_kb as usize * 1024,
+            cli.num_blocks,
+            drive.get_memory_alignment(),
+        );
+        rng.fill_bytes(random_blocks.data_mut());
+
+        write_blocks(drive.deref_mut(), &spot_blocks, &mut random_blocks);
+
+        // Record any write error in the validation map.
+        for i in 0..cli.num_blocks {
+            if random_blocks.errors[i] == IoError::WriteError {
+                validation_map[spot_blocks[i].idx] = BlockReport::WriteError;
+            }
+        }
+
+        println!(
+            "{}",
+            console::style("\nReading blocks with random data").bold()
+        );
+        let read_random_blocks = read_blocks(
             drive.deref_mut(),
             &spot_blocks,
             cli.block_size_kb as usize * 1024,
         );
 
-        // Record any read error in the validation map.
+        // Fill the validation map.
         for i in 0..cli.num_blocks {
-            if orig_data.errors[i] == IoError::ReadError {
+            if random_blocks.errors[i] == IoError::WriteError {
+                validation_map[spot_blocks[i].idx] = BlockReport::WriteError;
+            } else if read_random_blocks.errors[i] == IoError::ReadError {
                 validation_map[spot_blocks[i].idx] = BlockReport::ReadError;
+            } else if read_random_blocks.block(i) == random_blocks.block(i) {
+                validation_map[spot_blocks[i].idx] = BlockReport::Validated;
             } else {
-                validation_map[spot_blocks[i].idx] = BlockReport::ReadSuccessful;
+                validation_map[spot_blocks[i].idx] = BlockReport::NoStorage;
             }
         }
 
-        let has_read_errors = validation_map.contains(&BlockReport::ReadError);
-        if has_read_errors || cli.read_only {
-            // Typically, we would print the validation map at the end, but
-            // if there were read errors, print the validation map and exit.
-            print_validation_map(&validation_map, cli.map_width);
-        }
-        if cli.read_only {
-            return Ok(());
-        }
-        if has_read_errors {
-            println!(
-                "{}",
-                console::style("I/O errors encountered reading original blocks, exiting").red()
-            );
-            return Err(anyhow!("I/O errors reading original blocks"));
-        }
-        orig_data_option = Some(orig_data);
-    }
+        print_validation_map(&validation_map, cli.map_width);
 
-    println!(
-        "{}",
-        console::style("\nWriting blocks with random data").bold()
-    );
-
-    // Generate the random data to write to the blocks.
-    let mut random_blocks = Blocks::new(
-        cli.block_size_kb as usize * 1024,
-        cli.num_blocks,
-        drive.get_memory_alignment(),
-    );
-    rng.fill_bytes(random_blocks.data_mut());
-
-    write_blocks(drive.deref_mut(), &spot_blocks, &mut random_blocks);
-
-    // Record any write error in the validation map.
-    for i in 0..cli.num_blocks {
-        if random_blocks.errors[i] == IoError::WriteError {
-            validation_map[spot_blocks[i].idx] = BlockReport::WriteError;
-        }
-    }
-
-    println!(
-        "{}",
-        console::style("\nReading blocks with random data").bold()
-    );
-    let read_random_blocks = read_blocks(
-        drive.deref_mut(),
-        &spot_blocks,
-        cli.block_size_kb as usize * 1024,
-    );
-
-    // Fill the validation map.
-    for i in 0..cli.num_blocks {
-        if random_blocks.errors[i] == IoError::WriteError {
-            validation_map[spot_blocks[i].idx] = BlockReport::WriteError;
-        } else if read_random_blocks.errors[i] == IoError::ReadError {
-            validation_map[spot_blocks[i].idx] = BlockReport::ReadError;
-        } else if read_random_blocks.block(i) == random_blocks.block(i) {
-            validation_map[spot_blocks[i].idx] = BlockReport::Validated;
-        } else {
-            validation_map[spot_blocks[i].idx] = BlockReport::NoStorage;
-        }
-    }
-
-    print_validation_map(&validation_map, cli.map_width);
-
-    // Find highest validated block (where all previous blocks are also validated).
-    let mut highest_validated_block_idx = -1;
-    for (i, v) in validation_map.iter().enumerate() {
-        if *v != BlockReport::Validated {
-            break;
-        }
-        highest_validated_block_idx = i as i64;
-    }
-    let mut validated_drive_size = 0;
-    if highest_validated_block_idx >= 0 {
-        for b in spot_blocks.iter() {
-            if b.idx == highest_validated_block_idx as usize {
-                // The validated drive size is the equal to the end of this block,
-                // i.e. the beginning offset of the following block.
-                validated_drive_size = (b.num + 1) * cli.block_size_kb * 1024;
+        // Find highest validated block (where all previous blocks are also validated).
+        let mut highest_validated_block_idx = -1;
+        for (i, v) in validation_map.iter().enumerate() {
+            if *v != BlockReport::Validated {
                 break;
             }
+            highest_validated_block_idx = i as i64;
+        }
+        let mut validated_drive_size = 0;
+        if highest_validated_block_idx >= 0 {
+            for b in spot_blocks.iter() {
+                if b.idx == highest_validated_block_idx as usize {
+                    // The validated drive size is the equal to the end of this block,
+                    // i.e. the beginning offset of the following block.
+                    validated_drive_size = (b.num + 1) * cli.block_size_kb * 1024;
+                    break;
+                }
+            }
+        }
+        println!(
+            "{}: {} bytes ({:.3} GiB, {:.3} GB)",
+            console::style("Validated drive size").bold(),
+            validated_drive_size,
+            validated_drive_size as f64 / 1024.0 / 1024.0 / 1024.0,
+            validated_drive_size as f64 / 1000_000_000.0
+        );
+
+        if let Some(mut orig_data) = orig_data_option {
+            println!("{}", console::style("\nWriting original blocks").bold());
+            write_blocks(drive.deref_mut(), &spot_blocks, &mut orig_data);
         }
     }
-    println!(
-        "{}: {} bytes ({:.3} GiB, {:.3} GB)",
-        console::style("Validated drive size").bold(),
-        validated_drive_size,
-        validated_drive_size as f64 / 1024.0 / 1024.0 / 1024.0,
-        validated_drive_size as f64 / 1000_000_000.0
-    );
 
-    if let Some(mut orig_data) = orig_data_option {
-        println!("{}", console::style("\nWriting original blocks").bold());
-        write_blocks(drive.deref_mut(), &spot_blocks, &mut orig_data);
-    }
     Ok(())
 }
