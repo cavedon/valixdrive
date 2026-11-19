@@ -137,8 +137,9 @@ pub fn open(device: &str, read_only: bool) -> Result<WindowsDevice> {
     };
 
     if handle == INVALID_HANDLE_VALUE {
-        return Err(io::Error::last_os_error())
-            .with_context(|| format!("opening Windows drive {device:?}"));
+        return Err(last_os_error_with_context_closure(|| {
+            format!("opening Windows drive {device:?}")
+        }));
     }
 
     // Query geometry before returning the device. If the query fails or reports
@@ -191,8 +192,9 @@ fn query_geometry(handle: Handle) -> Result<DiskGeometryEx> {
     };
 
     if ok == 0 {
-        return Err(io::Error::last_os_error())
-            .context("IOCTL_DISK_GET_DRIVE_GEOMETRY_EX failed");
+        return Err(last_os_error_with_context_string(
+            "IOCTL_DISK_GET_DRIVE_GEOMETRY_EX failed"
+        ));
     }
 
     let required = core::mem::size_of::<DiskGeometryEx>();
@@ -250,8 +252,9 @@ impl Device for WindowsDevice {
             };
 
             if ok == 0 {
-                return Err(io::Error::last_os_error())
-                    .with_context(|| format!("reading at device offset {}", offset + done as u64));
+                return Err(last_os_error_with_context_closure(|| {
+                    format!("reading at device offset {}", offset + done as u64)
+                }));
             }
             if bytes_read == 0 {
                 bail!("unexpected end of device while reading at offset {}", offset + done as u64);
@@ -289,8 +292,9 @@ impl Device for WindowsDevice {
             };
 
             if ok == 0 {
-                return Err(io::Error::last_os_error())
-                    .with_context(|| format!("writing at device offset {}", offset + done as u64));
+                return Err(last_os_error_with_context_closure(|| {
+                    format!("writing at device offset {}", offset + done as u64)
+                }));
             }
             if bytes_written == 0 {
                 bail!("zero bytes written at device offset {}", offset + done as u64);
@@ -339,8 +343,38 @@ fn seek_to(handle: Handle, offset: u64) -> Result<()> {
     let ok = unsafe { SetFilePointerEx(handle, offset, null_mut(), FILE_BEGIN) };
 
     if ok == 0 {
-        return Err(io::Error::last_os_error()).context("seeking to device offset");
+        return Err(last_os_error_with_context_string(
+            "seeking to device offset"
+        ));
     }
 
     Ok(())
+}
+
+fn last_os_error_with_context_closure<F, C>(context: F) -> anyhow::Error
+where
+    F: FnOnce() -> C,
+    C: std::fmt::Display + Send + Sync + 'static,
+{
+    let err = io::Error::last_os_error();
+    eprintln!(
+        "OS error: {err:?}, code: {:?}",
+        err.raw_os_error()
+    );
+
+    Err::<(), _>(err)
+        .with_context(context)
+        .unwrap_err()
+}
+
+fn last_os_error_with_context_string(context: impl Into<String>) -> anyhow::Error {
+    let err = std::io::Error::last_os_error();
+    eprintln!(
+        "OS error: {err:?}, code: {:?}",
+        err.raw_os_error()
+    );
+
+    Err::<(), _>(err)
+        .context(context.into())
+        .unwrap_err()
 }
