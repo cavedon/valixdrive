@@ -116,11 +116,17 @@ impl Drop for WindowsDevice {
 
 /// Open a raw physical drive, query its geometry, and only then return it.
 ///
-/// `device` should be a path such as `\\.\PhysicalDrive0`.
+/// `device` should be a path such as `\\.\F:`.
 pub fn open(device: &str, read_only: bool) -> Result<WindowsDevice> {
     let is_drive_letter = device.ends_with(':');
 
-    let path: Vec<u16> = OsStr::new(device).encode_wide().chain(Some(0)).collect();
+    let device = if is_drive_letter && device.len() == 2 {
+        format!("\\\\.\\{device}")
+    } else {
+        device.to_owned()
+    };
+
+    let path: Vec<u16> = OsStr::new(&device).encode_wide().chain(Some(0)).collect();
 
     let access = if read_only {
         GENERIC_READ

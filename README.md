@@ -70,15 +70,13 @@ Options:
   - attributes of the drive used in the following examples:
     * letter = `F:`
     * disk number = `2`
+  - `<DRIVE>` values that succeed:
+    * `F:`
+    * `\\.\F:`
   - `<DRIVE>` values that fail:
     * `\\.\PhysicalDrive2`
       - Write error at block
       - `OS error: Os { code: 5, kind: PermissionDenied, message: "Access is denied." }`
-    * `F:`
-      - Error: opening Windows drive "F:"
-      - `OS error: Os { code: 5, kind: PermissionDenied, message: "Access is denied." }`
-  - `<DRIVE>` values that succeed:
-    * `\\.\F:`
 
 ## Future improvements
 
