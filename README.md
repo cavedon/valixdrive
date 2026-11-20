@@ -66,30 +66,19 @@ Options:
 
 ## Notes (Windows)
 
-* for the `--drive` option, the value of `<DRIVE>` must reference the physical drive number
-
-  |          |                                  |
-  | -------- | -------------------------------- |
-  | format:  | `\\.\PhysicalDrive<DISK_NUMBER>` |
-  | example: | `\\.\PhysicalDrive2`             |
-
-* to obtain physical drive number&hellip;
-  1. at `cmd` prompt, run:
-     ```text
-     diskpart
-     ```
-  2. at `diskpart` prompt, run:
-     ```text
-     list volume
-     select volume F
-     detail volume
-     exit
-     ```
-     * where `F` is replaced by the drive letter of the volume on which to perform validation
-     * where `<DISK_NUMBER>` is obtained from the column labeled `Disk ###`
-       - example: `Disk 2`
-         * `<DISK_NUMBER>` = `2`
-         * `<DRIVE>` = `\\.\PhysicalDrive2`
+* for the `--drive` option, the value of `<DRIVE>` must be specified in a very specific way
+  - attributes of the drive used in the following examples:
+    * letter = `F:`
+    * disk number = `2`
+  - `<DRIVE>` values that fail:
+    * `\\.\PhysicalDrive2`
+      - Write error at block
+      - `OS error: Os { code: 5, kind: PermissionDenied, message: "Access is denied." }`
+    * `F:`
+      - Error: opening Windows drive "F:"
+      - `OS error: Os { code: 5, kind: PermissionDenied, message: "Access is denied." }`
+  - `<DRIVE>` values that succeed:
+    * `\\.\F:`
 
 ## Future improvements
 

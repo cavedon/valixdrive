@@ -28,8 +28,8 @@ const FILE_ATTRIBUTE_NORMAL: Dword = 0x0000_0080;
 const FILE_BEGIN: Dword = 0;
 
 const FSCTL_LOCK_VOLUME: Dword = 0x0009_0018;
-const FSCTL_ALLOW_EXTENDED_DASD_IO: Dword = 0x0009_0083;
 const IOCTL_DISK_GET_DRIVE_GEOMETRY_EX: Dword = 0x0007_00A0;
+const IOCTL_DISK_GET_LENGTH_INFO: Dword = 0x0007_405C;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -118,6 +118,8 @@ impl Drop for WindowsDevice {
 ///
 /// `device` should be a path such as `\\.\PhysicalDrive0`.
 pub fn open(device: &str, read_only: bool) -> Result<WindowsDevice> {
+    let is_drive_letter = device.ends_with(':');
+
     let path: Vec<u16> = OsStr::new(device).encode_wide().chain(Some(0)).collect();
 
     let access = if read_only {
@@ -165,25 +167,6 @@ pub fn open(device: &str, read_only: bool) -> Result<WindowsDevice> {
         }));
     }
 
-    let allowed = unsafe {
-        DeviceIoControl(
-            handle,
-            FSCTL_ALLOW_EXTENDED_DASD_IO,
-            null(),
-            0,
-            null_mut(),
-            0,
-            &mut bytes_returned,
-            null_mut(),
-        )
-    };
-
-    if allowed == 0 {
-        return Err(last_os_error_with_context_closure(|| {
-            format!("allowing extended DASD I/O for {device:?}")
-        }));
-    }
-
     // Query geometry before returning the device. If the query fails or reports
     // invalid geometry, close the handle and do not enable writes.
     let geometry = match query_geometry(handle) {
@@ -205,6 +188,13 @@ pub fn open(device: &str, read_only: bool) -> Result<WindowsDevice> {
     // This ioctl reports logical sector size. It does not identify the
     // physical sector size, so do not claim that it does.
     info.physical_block_size = 0;
+
+    if is_drive_letter {
+        println!("size of disk: {} bytes, from: IOCTL_DISK_GET_DRIVE_GEOMETRY_EX", info.size);
+
+        info.size = query_volume_size(handle)?;
+        println!("size of disk: {} bytes, from: IOCTL_DISK_GET_LENGTH_INFO", info.size);
+    }
 
     Ok(WindowsDevice {
         handle,
@@ -260,6 +250,44 @@ fn query_geometry(handle: Handle) -> Result<DiskGeometryEx> {
     }
 
     Ok(geometry)
+}
+
+#[repr(C)]
+struct GetLengthInformation {
+    length: i64, // Windows LARGE_INTEGER
+}
+
+fn query_volume_size(handle: Handle) -> std::io::Result<u64> {
+    let mut info = GetLengthInformation { length: 0 };
+    let mut bytes_returned = 0u32;
+
+    let ok = unsafe {
+        DeviceIoControl(
+            handle,
+            IOCTL_DISK_GET_LENGTH_INFO,
+            std::ptr::null(),
+            0,
+            &mut info as *mut _ as *mut _,
+            std::mem::size_of::<GetLengthInformation>() as u32,
+            &mut bytes_returned,
+            std::ptr::null_mut(),
+        )
+    };
+
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    if bytes_returned < std::mem::size_of::<GetLengthInformation>() as u32 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "DeviceIoControl returned an incomplete length structure",
+        ));
+    }
+
+    u64::try_from(info.length).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "negative volume length")
+    })
 }
 
 impl Device for WindowsDevice {
