@@ -362,11 +362,12 @@ impl WindowsDevice {
 
 fn seek_to(handle: Handle, offset: u64) -> Result<()> {
     let offset = i64::try_from(offset).context("device offset exceeds Windows file-position range")?;
-    let ok = unsafe { SetFilePointerEx(handle, offset, null_mut(), FILE_BEGIN) };
+    let mut actual = 0i64;
+    let ok = unsafe { SetFilePointerEx(handle, offset, &mut actual, FILE_BEGIN) };
 
-    if ok == 0 {
+    if ok == 0 || offset != actual {
         return Err(last_os_error_with_context_string(
-            "seeking to device offset"
+            "seeking to device offset: requested={offset}, actual={actual}"
         ));
     }
 
